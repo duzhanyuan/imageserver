@@ -2,9 +2,6 @@ package main
 
 import (
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"net"
 	"net/http"
 	"net/url"

@@ -16,9 +16,15 @@ import (
 	imageserver_cache_memory "github.com/pierrre/imageserver/cache/memory"
 	imageserver_cache_redis "github.com/pierrre/imageserver/cache/redis"
 	imageserver_http "github.com/pierrre/imageserver/http"
-	imageserver_http_parser_graphicsmagick "github.com/pierrre/imageserver/http/parser/graphicsmagick"
+	imageserver_http_parser_nfntresize "github.com/pierrre/imageserver/http/parser/nfntresize"
 	imageserver_processor "github.com/pierrre/imageserver/processor"
-	imageserver_processor_graphicsmagick "github.com/pierrre/imageserver/processor/graphicsmagick"
+	imageserver_processor_native "github.com/pierrre/imageserver/processor/native"
+	_ "github.com/pierrre/imageserver/processor/native/encoder/bmp"
+	_ "github.com/pierrre/imageserver/processor/native/encoder/gif"
+	_ "github.com/pierrre/imageserver/processor/native/encoder/jpeg"
+	_ "github.com/pierrre/imageserver/processor/native/encoder/png"
+	_ "github.com/pierrre/imageserver/processor/native/encoder/tiff"
+	imageserver_processor_native_nfntresize "github.com/pierrre/imageserver/processor/native/nfntresize"
 	imageserver_provider "github.com/pierrre/imageserver/provider"
 	imageserver_testdata "github.com/pierrre/imageserver/testdata"
 )
@@ -88,7 +94,9 @@ func newImageHTTPHandler() http.Handler {
 func newParser() imageserver_http.Parser {
 	return &imageserver_http.ListParser{
 		&imageserver_http.SourceParser{},
-		&imageserver_http_parser_graphicsmagick.Parser{},
+		&imageserver_http_parser_nfntresize.Parser{},
+		&imageserver_http.FormatParser{},
+		&imageserver_http.QualityParser{},
 	}
 }
 
@@ -113,17 +121,12 @@ func newServerProcessor(server imageserver.Server) imageserver.Server {
 }
 
 func newProcessor() imageserver_processor.Processor {
-	processor := imageserver_processor.Processor(&imageserver_processor_graphicsmagick.Processor{
-		Executable: "gm",
-		Timeout:    time.Duration(10 * time.Second),
-		AllowedFormats: []string{
-			"jpeg",
-			"png",
-			"bmp",
-			"gif",
+	processor := imageserver_processor.Processor(
+		&imageserver_processor_native.Processor{
+			Processor: &imageserver_processor_native_nfntresize.Processor{},
 		},
-	})
-	processor = imageserver_processor.NewLimit(processor, 16)
+	)
+	processor = imageserver_processor.NewLimit(processor, uint(runtime.GOMAXPROCS(0)*2))
 	return processor
 }
 
