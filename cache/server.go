@@ -9,49 +9,55 @@ import (
 	"github.com/pierrre/imageserver"
 )
 
-// Server represents a Server with Cache
+// Server is a imageserver.Server implementation that supports a Cache.
+//
+// Steps:
+//  - Generate the cache key.
+//  - Get the Image from the Cache, and return it if found.
+//  - Get the Image from the Server.
+//  - Set the Image to the Cache.
+//  - Return the Image.
 type Server struct {
 	imageserver.Server
 	Cache        Cache
 	KeyGenerator KeyGenerator
 }
 
-// Get wraps the call to the underlying Server and Get from/Set to the Cache
+// Get implements imageserver.Server.
 func (s *Server) Get(params imageserver.Params) (*imageserver.Image, error) {
 	key := s.KeyGenerator.GetKey(params)
-
-	image, err := s.Cache.Get(key, params)
-	if err == nil {
-		return image, nil
-	}
-
-	image, err = s.Server.Get(params)
+	im, err := s.Cache.Get(key, params)
 	if err != nil {
 		return nil, err
 	}
-
-	err = s.Cache.Set(key, image, params)
+	if im != nil {
+		return im, nil
+	}
+	im, err = s.Server.Get(params)
 	if err != nil {
 		return nil, err
 	}
-
-	return image, nil
+	err = s.Cache.Set(key, im, params)
+	if err != nil {
+		return nil, err
+	}
+	return im, nil
 }
 
-// KeyGenerator generates a Cache key
+// KeyGenerator represents a Cache key generator.
 type KeyGenerator interface {
 	GetKey(imageserver.Params) string
 }
 
-// KeyGeneratorFunc is a KeyGenerator func
+// KeyGeneratorFunc is a KeyGenerator func.
 type KeyGeneratorFunc func(imageserver.Params) string
 
-// GetKey calls the func
+// GetKey implements KeyGenerator.
 func (f KeyGeneratorFunc) GetKey(params imageserver.Params) string {
 	return f(params)
 }
 
-// NewParamsHashKeyGenerator returns a KeyGenerator that hashes the Params
+// NewParamsHashKeyGenerator returns a new KeyGenerator that hashes the Params.
 func NewParamsHashKeyGenerator(newHashFunc func() hash.Hash) KeyGenerator {
 	pool := &sync.Pool{
 		New: func() interface{} {
@@ -66,4 +72,15 @@ func NewParamsHashKeyGenerator(newHashFunc func() hash.Hash) KeyGenerator {
 		pool.Put(h)
 		return hex.EncodeToString(data)
 	})
+}
+
+// PrefixKeyGenerator is a KeyGenerator implementation that adds a prefix to the key.
+type PrefixKeyGenerator struct {
+	KeyGenerator
+	Prefix string
+}
+
+// GetKey implements KeyGenerator.
+func (g *PrefixKeyGenerator) GetKey(params imageserver.Params) string {
+	return g.Prefix + g.KeyGenerator.GetKey(params)
 }

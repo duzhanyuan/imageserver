@@ -1,6 +1,7 @@
 package memcache
 
 import (
+	"strings"
 	"testing"
 
 	memcache_impl "github.com/bradfitz/gomemcache/memcache"
@@ -14,26 +15,16 @@ var _ imageserver_cache.Cache = &Cache{}
 
 func TestGetSet(t *testing.T) {
 	cache := newTestCache(t)
-
-	// maximum object size is only 1MB
-	for _, image := range []*imageserver.Image{
-		testdata.Small,
-		testdata.Medium,
-		testdata.Large,
-	} {
-		cachetest.CacheTestGetSet(t, cache, image)
-	}
+	cachetest.TestGetSet(t, cache)
 }
 
-func TestGetErrorMiss(t *testing.T) {
+func TestGetMiss(t *testing.T) {
 	cache := newTestCache(t)
-
-	cachetest.CacheTestGetErrorMiss(t, cache)
+	cachetest.TestGetMiss(t, cache)
 }
 
 func TestGetErrorServer(t *testing.T) {
 	cache := newTestCacheInvalidServer(t)
-
 	_, err := cache.Get(cachetest.KeyValid, imageserver.Params{})
 	if err == nil {
 		t.Fatal("no error")
@@ -42,7 +33,6 @@ func TestGetErrorServer(t *testing.T) {
 
 func TestSetErrorServer(t *testing.T) {
 	cache := newTestCacheInvalidServer(t)
-
 	err := cache.Set(cachetest.KeyValid, testdata.Medium, imageserver.Params{})
 	if err == nil {
 		t.Fatal("no error")
@@ -51,18 +41,35 @@ func TestSetErrorServer(t *testing.T) {
 
 func TestGetErrorUnmarshal(t *testing.T) {
 	cache := newTestCache(t)
-
-	data, _ := testdata.Medium.MarshalBinary()
-	data = data[:len(data)-1]
-
-	err := cache.setData(cachetest.KeyValid, data)
+	data, err := testdata.Medium.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	data = data[:len(data)-1]
+	err = cache.setData(cachetest.KeyValid, data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = cache.Get(cachetest.KeyValid, imageserver.Params{})
 	if err == nil {
 		t.Fatal("no error")
+	}
+	if _, ok := err.(*imageserver.ImageError); !ok {
+		t.Fatalf("unexpected error type: %T", err)
+	}
+}
+
+func TestSetErrorMarshal(t *testing.T) {
+	cache := newTestCache(t)
+	im := &imageserver.Image{
+		Format: strings.Repeat("a", imageserver.ImageFormatMaxLen+1),
+	}
+	err := cache.Set(cachetest.KeyValid, im, imageserver.Params{})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if _, ok := err.(*imageserver.ImageError); !ok {
+		t.Fatalf("unexpected error type: %T", err)
 	}
 }
 

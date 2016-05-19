@@ -24,12 +24,7 @@ func BenchmarkGetHuge(b *testing.B) {
 	benchmarkGet(b, testdata.Huge)
 }
 
-func BenchmarkGetAnimated(b *testing.B) {
-	benchmarkGet(b, testdata.Animated)
-}
-
 func benchmarkGet(b *testing.B, image *imageserver.Image) {
 	cache := newTestCache()
-
-	cachetest.CacheBenchmarkGet(b, cache, image)
+	cachetest.BenchmarkGet(b, cache, 1, image) // more parallelism change nothing
 }

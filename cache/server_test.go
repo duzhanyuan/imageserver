@@ -2,7 +2,7 @@ package cache_test
 
 import (
 	"crypto/sha256"
-	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/pierrre/imageserver"
@@ -36,10 +36,27 @@ func TestServer(t *testing.T) {
 	}
 }
 
+func TestServerErrorCacheGet(t *testing.T) {
+	s := &Server{
+		Cache: &Func{
+			GetFunc: func(key string, params imageserver.Params) (*imageserver.Image, error) {
+				return nil, fmt.Errorf("error")
+			},
+		},
+		KeyGenerator: KeyGeneratorFunc(func(params imageserver.Params) string {
+			return "test"
+		}),
+	}
+	_, err := s.Get(imageserver.Params{})
+	if err == nil {
+		t.Fatal("no error")
+	}
+}
+
 func TestServerErrorServer(t *testing.T) {
 	s := &Server{
 		Server: imageserver.ServerFunc(func(params imageserver.Params) (*imageserver.Image, error) {
-			return nil, errors.New("error")
+			return nil, fmt.Errorf("error")
 		}),
 		Cache: cachetest.NewMapCache(),
 		KeyGenerator: KeyGeneratorFunc(func(params imageserver.Params) string {
@@ -59,10 +76,10 @@ func TestServerErrorCacheSet(t *testing.T) {
 		}),
 		Cache: &Func{
 			GetFunc: func(key string, params imageserver.Params) (*imageserver.Image, error) {
-				return nil, &MissError{Key: key}
+				return nil, nil
 			},
 			SetFunc: func(key string, image *imageserver.Image, params imageserver.Params) error {
-				return errors.New("error")
+				return fmt.Errorf("error")
 			},
 		},
 		KeyGenerator: KeyGeneratorFunc(func(params imageserver.Params) string {
@@ -81,4 +98,19 @@ func TestNewParamsHashKeyGenerator(t *testing.T) {
 	NewParamsHashKeyGenerator(sha256.New).GetKey(imageserver.Params{
 		"foo": "bar",
 	})
+}
+
+var _ KeyGenerator = &PrefixKeyGenerator{}
+
+func TestPrefixKeyGenerator(t *testing.T) {
+	g := &PrefixKeyGenerator{
+		KeyGenerator: KeyGeneratorFunc(func(params imageserver.Params) string {
+			return "bar"
+		}),
+		Prefix: "foo",
+	}
+	key := g.GetKey(imageserver.Params{})
+	if key != "foobar" {
+		t.Fatal("not equal")
+	}
 }

@@ -1,4 +1,4 @@
-// Package redis provides a Redis Image Cache
+// Package redis provides a Redis imageserver/cache.Cache implementation.
 package redis
 
 import (
@@ -7,71 +7,64 @@ import (
 
 	redigo "github.com/garyburd/redigo/redis"
 	"github.com/pierrre/imageserver"
-	imageserver_cache "github.com/pierrre/imageserver/cache"
 )
 
-// Cache represents a Redis Image Cache
+// Cache is a Redis imageserver/cache.Cache implementation.
 //
-// It uses Gary Burd's Redis client https://github.com/garyburd/redigo
+// It uses https://github.com/garyburd/redigo .
 type Cache struct {
 	Pool *redigo.Pool
 
-	Expire time.Duration // optional
+	// Expire is an optional expiration duration.
+	Expire time.Duration
 }
 
-// Get gets an Image from Redis
+// Get implements imageserver/cache.Cache.
 func (cache *Cache) Get(key string, params imageserver.Params) (*imageserver.Image, error) {
 	data, err := cache.getData(key)
 	if err != nil {
-		return nil, &imageserver_cache.MissError{Key: key}
+		return nil, err
 	}
-
-	image, err := imageserver.NewImageUnmarshalBinary(data)
+	if data == nil {
+		return nil, nil
+	}
+	im := new(imageserver.Image)
+	err = im.UnmarshalBinaryNoCopy(data)
 	if err != nil {
 		return nil, err
 	}
-
-	return image, nil
+	return im, nil
 }
 
 func (cache *Cache) getData(key string) ([]byte, error) {
 	conn := cache.Pool.Get()
 	defer conn.Close()
-
-	return redigo.Bytes(conn.Do("GET", key))
+	data, err := redigo.Bytes(conn.Do("GET", key))
+	if err != nil {
+		if err == redigo.ErrNil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
-// Set sets an Image to Redis
-func (cache *Cache) Set(key string, image *imageserver.Image, params imageserver.Params) error {
-	data, _ := image.MarshalBinary()
-
-	err := cache.setData(key, data)
+// Set implements imageserver/cache.Cache.
+func (cache *Cache) Set(key string, im *imageserver.Image, params imageserver.Params) error {
+	data, err := im.MarshalBinary()
 	if err != nil {
 		return err
 	}
-
-	return nil
+	return cache.setData(key, data)
 }
 
 func (cache *Cache) setData(key string, data []byte) error {
 	params := []interface{}{key, data}
-
 	if cache.Expire != 0 {
 		params = append(params, "EX", strconv.Itoa(int(cache.Expire.Seconds())))
 	}
-
 	conn := cache.Pool.Get()
 	defer conn.Close()
-
 	_, err := conn.Do("SET", params...)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Close closes the underlying Redigo pool
-func (cache *Cache) Close() error {
-	return cache.Pool.Close()
+	return err
 }

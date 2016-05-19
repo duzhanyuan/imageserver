@@ -2,34 +2,61 @@ package http
 
 import (
 	"net/http"
-	"net/url"
 	"time"
 )
 
-var expiresHeaderLocation, _ = time.LoadLocation("GMT")
-
-// ExpiresHandler adds "Expires" header
+// CacheControlPublicHandler is a net/http.Handler implementation that sets the "Cache-Control" header to "public".
 //
-// It only adds the header if the status code is OK (200) or NotModified (304)
+// It only sets the header if the status code is StatusOK/204 or StatusNotModified/304.
+type CacheControlPublicHandler struct {
+	http.Handler
+}
+
+// ServeHTTP implements net/http.Handler
+func (h *CacheControlPublicHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	hrw := &headerResponseWriter{
+		ResponseWriter: rw,
+		OnWriteHeaderFunc: func(code int) {
+			if code == http.StatusOK || code == http.StatusNotModified {
+				rw.Header().Set("Cache-Control", "public")
+			}
+		},
+	}
+	h.Handler.ServeHTTP(hrw, req)
+}
+
+var expiresHeaderLocation = getTimeLocation("GMT")
+
+func getTimeLocation(name string) *time.Location {
+	l, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return l
+}
+
+// ExpiresHandler is a net/http.Handler implementation that sets the "Expires" header.
+//
+// It only sets the header if the status code is StatusOK/204 or StatusNotModified/304.
 type ExpiresHandler struct {
 	http.Handler
 	Expires time.Duration
 }
 
-func (eh *ExpiresHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// ServeHTTP implements net/http.Handler.
+func (eh *ExpiresHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	hrw := &headerResponseWriter{
-		ResponseWriter: w,
+		ResponseWriter: rw,
 		OnWriteHeaderFunc: func(code int) {
-			if code != http.StatusOK && code != http.StatusNotModified {
-				return
+			if code == http.StatusOK || code == http.StatusNotModified {
+				t := time.Now()
+				t = t.Add(eh.Expires)
+				t = t.In(expiresHeaderLocation)
+				rw.Header().Set("Expires", t.Format(time.RFC1123))
 			}
-			t := time.Now()
-			t = t.Add(eh.Expires)
-			t = t.In(expiresHeaderLocation)
-			w.Header().Set("Expires", t.Format(time.RFC1123))
 		},
 	}
-	eh.Handler.ServeHTTP(hrw, r)
+	eh.Handler.ServeHTTP(hrw, req)
 }
 
 type headerResponseWriter struct {
@@ -52,14 +79,4 @@ func (hrw *headerResponseWriter) WriteHeader(code int) {
 	hrw.OnWriteHeaderFunc(code)
 	hrw.ResponseWriter.WriteHeader(code)
 	hrw.wroteHeader = true
-}
-
-func copyURL(u *url.URL) *url.URL {
-	uTmp := *u
-	uCopy := &uTmp
-	if u.User != nil {
-		usTmp := *u.User
-		uCopy.User = &usTmp
-	}
-	return uCopy
 }

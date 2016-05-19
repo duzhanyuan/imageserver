@@ -1,4 +1,4 @@
-// Package http provides an HTTP Handler for an Image Server
+// Package http provides a net/http.Handler implementation that wraps a imageserver.Server.
 package http
 
 import (
@@ -7,117 +7,124 @@ import (
 	"hash"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"sync"
 
 	"github.com/pierrre/imageserver"
 )
 
-var inmHeaderRegexp = regexp.MustCompile("^\"(.+)\"$")
-
-// Handler represents an HTTP Handler for imageserver.Server
+// Handler is a net/http.Handler implementation that wraps a imageserver.Server.
+//
+// Supported methods are: GET and HEAD.
+// Other method will return a StatusMethodNotAllowed/405 response.
+//
+// It supports ETag/If-None-Match headers and returns a StatusNotModified/304 response accordingly.
+// But it doesn't check if the Image really exists (the Server is not called).
+//
+// Steps:
+//  - Parse the HTTP request, and fill the Params.
+//  - If the given If-None-Match header matches the ETag, return a StatusNotModified/304 response.
+//  - Call the Server and get the Image.
+//  - Return a StatusOK/200 response containing the Image.
+//
+// Errors (returned by Parser or Server):
+//  - *imageserver/http.Error will return a response with the given status code and message.
+//  - *imageserver.ParamError will return a StatusBadRequest/400 response, with a message including the resolved HTTP param.
+//  - *imageserver.ImageError will return a StatusBadRequest/400 response, with the given message.
+//  - Other error will return a StatusInternalServerError/500 response, and ErrorFunc will be called.
+//
+// Returned headers:
+//  - Content-Type is set for StatusOK/200 response, and contains "image/{Image.Format}".
+//  - Content-Length is set for StatusOK/200 response, and contains the Image size.
+//  - ETag is set for StatusOK/200 and StatusNotModified/304 response, and contains the ETag value.
 type Handler struct {
-	Parser    Parser                                 // parse request to Params
-	Server    imageserver.Server                     // handle image requests
-	ETagFunc  func(params imageserver.Params) string // optional
-	ErrorFunc func(err error, request *http.Request) // allows to handle internal errors, optional
+	// Parser parses the HTTP request and fills the Params.
+	Parser Parser
+
+	// Server handles the image request.
+	Server imageserver.Server
+
+	// ETagFunc is an optional function that returns the ETag value for the given Params.
+	// See https://en.wikipedia.org/wiki/HTTP_ETag .
+	// The returned value must not be enclosed in quotes (they are added automatically).
+	ETagFunc func(params imageserver.Params) string
+
+	// ErrorFunc is an optional function that is called if there is an internal error.
+	ErrorFunc func(err error, req *http.Request)
 }
 
-// ServeHTTP implements the HTTP Handler interface
-//
-// Only GET and HEAD methods are supported.
-//
-// Supports ETag/If-None-Match (status code 304).
-// It doesn't check if the image really exists.
-func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != "GET" && request.Method != "HEAD" {
-		handler.sendError(writer, request, NewErrorDefaultText(http.StatusMethodNotAllowed))
-		return
+// ServeHTTP implements net/http.Handler.
+func (handler *Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	err := handler.serveHTTP(rw, req)
+	if err != nil {
+		handler.sendError(rw, req, err)
 	}
+}
 
-	params := make(imageserver.Params)
-	if err := handler.Parser.Parse(request, params); err != nil {
-		handler.sendError(writer, request, err)
-		return
+func (handler *Handler) serveHTTP(rw http.ResponseWriter, req *http.Request) error {
+	if req.Method != "GET" && req.Method != "HEAD" {
+		return NewErrorDefaultText(http.StatusMethodNotAllowed)
 	}
-
-	if handler.checkNotModified(writer, request, params) {
-		return
+	params := imageserver.Params{}
+	err := handler.Parser.Parse(req, params)
+	if err != nil {
+		return err
 	}
-
+	etag := handler.getETag(params)
+	if handler.checkNotModified(rw, req, etag) {
+		return nil
+	}
 	image, err := handler.Server.Get(params)
 	if err != nil {
-		handler.sendError(writer, request, err)
-		return
+		return err
 	}
-
-	if err := handler.sendImage(writer, request, params, image); err != nil {
-		handler.callErrorFunc(err, request)
-		return
-	}
-}
-
-func (handler *Handler) checkNotModified(writer http.ResponseWriter, request *http.Request, params imageserver.Params) bool {
-	if handler.ETagFunc == nil {
-		return false
-	}
-
-	inmHeader := request.Header.Get("If-None-Match")
-	if inmHeader == "" {
-		return false
-	}
-
-	matches := inmHeaderRegexp.FindStringSubmatch(inmHeader)
-	if matches == nil || len(matches) != 2 {
-		return false
-	}
-	inm := matches[1]
-
-	etag := handler.ETagFunc(params)
-	if inm != etag {
-		return false
-	}
-
-	handler.setImageHeaderCommon(writer, request, params)
-	writer.WriteHeader(http.StatusNotModified)
-	return true
-}
-
-func (handler *Handler) sendImage(writer http.ResponseWriter, request *http.Request, params imageserver.Params, image *imageserver.Image) error {
-	handler.setImageHeaderCommon(writer, request, params)
-
-	if image.Format != "" {
-		writer.Header().Set("Content-Type", "image/"+image.Format)
-	}
-
-	writer.Header().Set("Content-Length", strconv.Itoa(len(image.Data)))
-
-	if request.Method == "GET" {
-		if _, err := writer.Write(image.Data); err != nil {
-			return err
-		}
-	}
-
+	handler.sendImage(rw, req, image, etag)
 	return nil
 }
 
-func (handler *Handler) setImageHeaderCommon(writer http.ResponseWriter, request *http.Request, params imageserver.Params) {
-	header := writer.Header()
-
-	header.Set("Cache-Control", "public")
-
+func (handler *Handler) getETag(params imageserver.Params) string {
 	if handler.ETagFunc != nil {
-		header.Set("ETag", fmt.Sprintf("\"%s\"", handler.ETagFunc(params)))
+		return "\"" + handler.ETagFunc(params) + "\""
+	}
+	return ""
+}
+
+func (handler *Handler) checkNotModified(rw http.ResponseWriter, req *http.Request, etag string) bool {
+	if etag == "" {
+		return false
+	}
+	inm := req.Header.Get("If-None-Match")
+	if inm != etag {
+		return false
+	}
+	handler.setImageHeaderCommon(rw, req, etag)
+	rw.WriteHeader(http.StatusNotModified)
+	return true
+}
+
+func (handler *Handler) sendImage(rw http.ResponseWriter, req *http.Request, image *imageserver.Image, etag string) {
+	handler.setImageHeaderCommon(rw, req, etag)
+	if image.Format != "" {
+		rw.Header().Set("Content-Type", "image/"+image.Format)
+	}
+	rw.Header().Set("Content-Length", strconv.Itoa(len(image.Data)))
+	if req.Method == "GET" {
+		rw.Write(image.Data)
 	}
 }
 
-func (handler *Handler) sendError(writer http.ResponseWriter, request *http.Request, err error) {
-	httpErr := handler.convertGenericErrorToHTTP(err, request)
-	http.Error(writer, httpErr.Text, httpErr.Code)
+func (handler *Handler) setImageHeaderCommon(rw http.ResponseWriter, req *http.Request, etag string) {
+	if etag != "" {
+		rw.Header().Set("ETag", etag)
+	}
 }
 
-func (handler *Handler) convertGenericErrorToHTTP(err error, request *http.Request) *Error {
+func (handler *Handler) sendError(rw http.ResponseWriter, req *http.Request, err error) {
+	httpErr := handler.convertGenericErrorToHTTP(err, req)
+	http.Error(rw, httpErr.Text, httpErr.Code)
+}
+
+func (handler *Handler) convertGenericErrorToHTTP(err error, req *http.Request) *Error {
 	switch err := err.(type) {
 	case *Error:
 		return err
@@ -132,18 +139,16 @@ func (handler *Handler) convertGenericErrorToHTTP(err error, request *http.Reque
 		text := fmt.Sprintf("image error: %s", err.Message)
 		return &Error{Code: http.StatusBadRequest, Text: text}
 	default:
-		handler.callErrorFunc(err, request)
+		if handler.ErrorFunc != nil {
+			handler.ErrorFunc(err, req)
+		}
 		return NewErrorDefaultText(http.StatusInternalServerError)
 	}
 }
 
-func (handler *Handler) callErrorFunc(err error, request *http.Request) {
-	if handler.ErrorFunc != nil {
-		handler.ErrorFunc(err, request)
-	}
-}
-
-// NewParamsHashETagFunc returns a function that hashes the params and returns an ETag value
+// NewParamsHashETagFunc returns a function that hashes the params and returns an ETag value.
+//
+// It is intended to be used in Handler.ETagFunc.
 func NewParamsHashETagFunc(newHashFunc func() hash.Hash) func(params imageserver.Params) string {
 	pool := &sync.Pool{
 		New: func() interface{} {

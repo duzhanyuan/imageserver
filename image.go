@@ -4,130 +4,132 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"sync"
 )
 
-/*
-Image represents a raw image.
+const (
+	// ImageFormatMaxLen is the maximum length for the Image's format.
+	ImageFormatMaxLen = 1 << 8 // 256 B
+	// ImageDataMaxLen is the maximum length for the Mmage's data.
+	ImageDataMaxLen = 1 << 30 // 1 GiB
+)
 
+var (
+	imageByteOrder = binary.LittleEndian
+)
 
-Binary encoding:
-
-- Format length (uint32)
-
-- Format (string)
-
-- Data length (uint32)
-
-- Data([]byte)
-
-Numbers are encoded using little-endian order.
-*/
+// Image is a raw image.
+//
+// Binary encoding:
+//  - Format length (uint32)
+//  - Format (string)
+//  - Data length (uint32)
+//  - Data([]byte)
+// Numbers are encoded using little-endian order.
 type Image struct {
-	Format string // png, jpeg, bmp, gif, ...
-	Data   []byte // raw image data
+	// Format is the format used to encode the image.
+	//
+	// e.g. png, jpeg, bmp, gif, ...
+	Format string
+
+	// Data contains the raw data of the encoded image.
+	Data []byte
 }
 
-// NewImageUnmarshalBinary creates a new Image from serialized bytes.
-//
-// The caller must not reuse data after that.
-func NewImageUnmarshalBinary(marshalledData []byte) (*Image, error) {
-	image := new(Image)
-	err := image.UnmarshalBinary(marshalledData)
-	if err != nil {
-		return nil, err
+// MarshalBinary implements encoding.BinaryMarshaler.
+func (im *Image) MarshalBinary() ([]byte, error) {
+	if len(im.Format) > ImageFormatMaxLen {
+		return nil, &ImageError{Message: fmt.Sprintf("marshal: format length %d is greater than the maximum value %d", len(im.Format), ImageFormatMaxLen)}
 	}
-	return image, nil
+	if len(im.Data) > ImageDataMaxLen {
+		return nil, &ImageError{Message: fmt.Sprintf("marshal: data length %d is greater than the maximum value %d", len(im.Data), ImageDataMaxLen)}
+	}
+
+	data := make([]byte, 0, 4+len(im.Format)+4+len(im.Data))
+	buf := make([]byte, 4)
+
+	imageByteOrder.PutUint32(buf, uint32(len(im.Format)))
+	data = append(data, buf...)
+	data = append(data, im.Format...)
+
+	imageByteOrder.PutUint32(buf, uint32(len(im.Data)))
+	data = append(data, buf...)
+	data = append(data, im.Data...)
+
+	return data, nil
 }
 
-var bufferPool = &sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
-
-// MarshalBinary serializes the Image to bytes.
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
 //
-// It's very unlikely that it returns an error. (impossible?)
-func (image *Image) MarshalBinary() ([]byte, error) {
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	formatLen := uint32(len(image.Format))
-	binary.Write(buf, binary.LittleEndian, &formatLen)
-	buf.Write([]byte(image.Format))
-
-	dataLen := uint32(len(image.Data))
-	binary.Write(buf, binary.LittleEndian, &dataLen)
-	buf.Write(image.Data)
-
-	b := buf.Bytes()
-	bufferPool.Put(buf)
-	return b, nil
+// It copies data then call UnmarshalBinaryNoCopy().
+func (im *Image) UnmarshalBinary(data []byte) error {
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+	return im.UnmarshalBinaryNoCopy(dataCopy)
 }
 
-// UnmarshalBinary unserializes bytes to the Image.
+// UnmarshalBinaryNoCopy is like encoding.BinaryUnmarshaler but does no copy.
 //
 // The caller must not reuse data after that.
-func (image *Image) UnmarshalBinary(data []byte) error {
-	dataPosition := 0
+func (im *Image) UnmarshalBinaryNoCopy(data []byte) error {
 	readData := func(length int) ([]byte, error) {
-		dataEnd := dataPosition + length
-		if dataEnd > len(data) {
-			return nil, &ImageError{Message: fmt.Sprintf("unmarshal: unexpected end of data at index %d instead of %d", len(data), dataEnd)}
+		if length > len(data) {
+			return nil, &ImageError{Message: "unmarshal: unexpected end of data"}
 		}
-		d := data[dataPosition:dataEnd]
-		dataPosition = dataEnd
-		return d, nil
+		res := data[:length]
+		data = data[length:]
+		return res, nil
 	}
 
-	var imageFormatLength uint32
-	if d, err := readData(4); err == nil {
-		binary.Read(bytes.NewReader(d), binary.LittleEndian, &imageFormatLength)
-	} else {
+	var buf []byte
+	var err error
+
+	buf, err = readData(4)
+	if err != nil {
 		return err
+	}
+	formatLen := imageByteOrder.Uint32(buf)
+	if formatLen > ImageFormatMaxLen {
+		return &ImageError{Message: fmt.Sprintf("unmarshal: format length %d is greater than the maximum value %d", formatLen, ImageFormatMaxLen)}
 	}
 
-	if d, err := readData(int(imageFormatLength)); err == nil {
-		image.Format = string(d)
-	} else {
+	buf, err = readData(int(formatLen))
+	if err != nil {
 		return err
+	}
+	im.Format = string(buf)
+
+	buf, err = readData(4)
+	if err != nil {
+		return err
+	}
+	dataLen := imageByteOrder.Uint32(buf)
+	if dataLen > ImageDataMaxLen {
+		return &ImageError{Message: fmt.Sprintf("unmarshal: data length %d is greater than the maximum value %d", dataLen, ImageDataMaxLen)}
 	}
 
-	var imageDataLength uint32
-	if d, err := readData(4); err == nil {
-		binary.Read(bytes.NewReader(d), binary.LittleEndian, &imageDataLength)
-	} else {
+	buf, err = readData(int(dataLen))
+	if err != nil {
 		return err
 	}
-
-	if d, err := readData(int(imageDataLength)); err == nil {
-		image.Data = d
-	} else {
-		return err
-	}
+	im.Data = buf
 
 	return nil
 }
 
 // ImageEqual compares two images and returns true if they are equal.
-func ImageEqual(image1, image2 *Image) bool {
-	if image1 == image2 {
+func ImageEqual(im1, im2 *Image) bool {
+	if im1 == im2 {
 		return true
 	}
-
-	if image1 == nil || image2 == nil {
+	if im1 == nil || im2 == nil {
 		return false
 	}
-
-	if image1.Format != image2.Format {
+	if im1.Format != im2.Format {
 		return false
 	}
-
-	if !bytes.Equal(image1.Data, image2.Data) {
+	if !bytes.Equal(im1.Data, im2.Data) {
 		return false
 	}
-
 	return true
 }
 

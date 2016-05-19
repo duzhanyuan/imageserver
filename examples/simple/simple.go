@@ -1,3 +1,4 @@
+// Package simple provides a simple example.
 package main
 
 import (
@@ -5,33 +6,31 @@ import (
 
 	"github.com/pierrre/imageserver"
 	imageserver_http "github.com/pierrre/imageserver/http"
-	imageserver_http_parser_graphicsmagick "github.com/pierrre/imageserver/http/parser/graphicsmagick"
-	imageserver_processor "github.com/pierrre/imageserver/processor"
-	imageserver_processor_graphicsmagick "github.com/pierrre/imageserver/processor/graphicsmagick"
-	imageserver_provider "github.com/pierrre/imageserver/provider"
+	imageserver_http_gift "github.com/pierrre/imageserver/http/gift"
+	imageserver_http_image "github.com/pierrre/imageserver/http/image"
+	imageserver_image "github.com/pierrre/imageserver/image"
+	_ "github.com/pierrre/imageserver/image/gif"
+	imageserver_image_gift "github.com/pierrre/imageserver/image/gift"
+	_ "github.com/pierrre/imageserver/image/jpeg"
+	_ "github.com/pierrre/imageserver/image/png"
 	imageserver_testdata "github.com/pierrre/imageserver/testdata"
 )
 
 func main() {
-	server := imageserver.Server(&imageserver_provider.Server{
-		Provider: imageserver_testdata.Provider,
-	})
-	server = &imageserver_processor.Server{
-		Server: server,
-		Processor: &imageserver_processor_graphicsmagick.Processor{
-			Executable: "gm",
-		},
-	}
-
-	handler := &imageserver_http.Handler{
-		Parser: &imageserver_http.ListParser{
+	http.Handle("/", &imageserver_http.Handler{
+		Parser: imageserver_http.ListParser([]imageserver_http.Parser{
 			&imageserver_http.SourceParser{},
-			&imageserver_http_parser_graphicsmagick.Parser{},
+			&imageserver_http_gift.ResizeParser{},
+			&imageserver_http_image.FormatParser{},
+			&imageserver_http_image.QualityParser{},
+		}),
+		Server: &imageserver.HandlerServer{
+			Server: imageserver_testdata.Server,
+			Handler: &imageserver_image.Handler{
+				Processor: &imageserver_image_gift.ResizeProcessor{},
+			},
 		},
-		Server: server,
-	}
-
-	http.Handle("/", handler)
+	})
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
 		panic(err)

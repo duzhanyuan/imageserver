@@ -1,23 +1,30 @@
 language: go
 
+sudo: false
+
 go:
-  - 1.4.2
+  - 1.6.2
   - tip
 
 services:
   - memcached
   - redis-server
 
+addons:
+  apt:
+    packages:
+      - graphicsmagick
+
 before_install:
-  - sudo apt-get install graphicsmagick
-  - go get -v golang.org/x/tools/cmd/cover
-  - go get -v golang.org/x/tools/cmd/vet
   - go get -v github.com/golang/lint/golint
 
-install: go get -v -t ./...
+install: go get -v -d -t ./...
 
 script:
-  - go test -v -cover ./...
+  - "echo 'mode: atomic' > coverage.txt && go list ./... | xargs -n1 -I{} sh -c 'go test -covermode=atomic -coverprofile=coverage.tmp {} && tail -n +2 coverage.tmp >> coverage.txt' && rm coverage.tmp"
   - gofmt -d .
   - go tool vet .
   - golint ./...
+
+after_success:
+  - bash <(curl -s https://codecov.io/bash)

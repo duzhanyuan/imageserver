@@ -1,77 +1,68 @@
+// Package cache provides a base for an Image cache.
 package cache
 
 import (
-	"fmt"
-
 	"github.com/pierrre/imageserver"
 )
 
-/*
-Cache represents an Image cache
-
-The Params can be used for custom behavior (no-cache, expiration, ...).
-*/
+// Cache represents an Image cache.
+//
+// The Params can be used for custom behavior (no-cache, expiration, ...).
 type Cache interface {
-	// Must return a MissError if it is a cache related problem.
+	// Get returns the Image associated to the key, or nil if not found.
 	Get(key string, params imageserver.Params) (*imageserver.Image, error)
+
+	// Set adds the Image and associate it to the key.
 	Set(key string, image *imageserver.Image, params imageserver.Params) error
 }
 
-// MissError represents a miss error
-type MissError struct {
-	Key string
-}
-
-func (err *MissError) Error() string {
-	return fmt.Sprintf("cache miss for key \"%s\"", err.Key)
-}
-
-// Async represent an asynchronous Cache
-type Async struct {
+// IgnoreError is a Cache implementation that ignores error from the underlying Cache.
+type IgnoreError struct {
 	Cache
-	ErrFunc func(err error, key string, image *imageserver.Image, params imageserver.Params)
 }
 
-// Set sets an Image to the underlying Cache using another goroutine
-func (a *Async) Set(key string, image *imageserver.Image, params imageserver.Params) error {
-	go func() {
-		err := a.Cache.Set(key, image, params)
-		if err != nil && a.ErrFunc != nil {
-			a.ErrFunc(err, key, image, params)
-		}
-	}()
+// Get implements Cache.
+func (c *IgnoreError) Get(key string, params imageserver.Params) (*imageserver.Image, error) {
+	im, err := c.Cache.Get(key, params)
+	if err != nil {
+		return nil, nil
+	}
+	return im, nil
+}
 
+// Set implements Cache.
+func (c *IgnoreError) Set(key string, image *imageserver.Image, params imageserver.Params) error {
+	c.Cache.Set(key, image, params)
 	return nil
 }
 
-// Func is an Image Cache that forwards calls to user defined functions
+// Async is an asynchronous Cache implementation.
+//
+// The Images are set from a new goroutine.
+type Async struct {
+	Cache
+}
+
+// Set implements Cache.
+func (a *Async) Set(key string, image *imageserver.Image, params imageserver.Params) error {
+	go func() {
+		a.Cache.Set(key, image, params)
+	}()
+	return nil
+}
+
+// Func is a Cache implementation that forwards calls to user defined functions
 type Func struct {
 	GetFunc func(key string, params imageserver.Params) (*imageserver.Image, error)
 	SetFunc func(key string, image *imageserver.Image, params imageserver.Params) error
 }
 
-// Get forwards call to GetFunc
+// Get implements Cache.
 func (c *Func) Get(key string, params imageserver.Params) (*imageserver.Image, error) {
 	return c.GetFunc(key, params)
 }
 
-// Set forwards call to SetFunc
+// Set implements Cache.
 func (c *Func) Set(key string, image *imageserver.Image, params imageserver.Params) error {
 	return c.SetFunc(key, image, params)
-}
-
-// Prefix is an Image Cache that adds a prefix to the key.
-type Prefix struct {
-	Cache
-	Prefix string
-}
-
-// Get adds the prefix to the key and calls the underlying cache.
-func (c *Prefix) Get(key string, params imageserver.Params) (*imageserver.Image, error) {
-	return c.Cache.Get(c.Prefix+key, params)
-}
-
-// Set adds the prefix to the key and calls the underlying cache.
-func (c *Prefix) Set(key string, image *imageserver.Image, params imageserver.Params) error {
-	return c.Cache.Set(c.Prefix+key, image, params)
 }
